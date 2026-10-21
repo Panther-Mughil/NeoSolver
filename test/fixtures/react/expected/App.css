@@ -1,0 +1,7 @@
+.app {
+  font-family: system-ui, sans-serif;
+  margin: 0 auto;
+}
+.app::after {
+  content: "\"quoted\"";
+}

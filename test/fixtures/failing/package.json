@@ -1,0 +1,8 @@
+{
+  "name": "neosolver-failing-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests.js"
+  }
+}

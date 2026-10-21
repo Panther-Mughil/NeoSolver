@@ -1,0 +1,1 @@
+document.getElementById('root').textContent = 'NeoSolver wrote this file';

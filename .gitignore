@@ -1,0 +1,21 @@
+# NeoSolver intentionally has ZERO runtime npm dependencies.
+node_modules/
+.npm/
+
+# Secrets — never commit these.
+.env
+neosolver.env
+.env.*
+!.env.example
+*.local
+*.local.json
+
+# Runtime state produced by ./start.sh
+neosolver.pid
+logs/
+
+# Local overrides / scratch output.
+*.log
+tmp/
+.tmp/
+scratch/

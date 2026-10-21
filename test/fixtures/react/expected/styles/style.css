@@ -1,0 +1,7 @@
+:root {
+  --neo-accent: #4f9cf9;
+}
+body {
+  background: #0b1020;
+  color: var(--neo-accent);
+}

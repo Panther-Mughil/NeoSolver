@@ -1,0 +1,33 @@
+{
+  "name": "neosolver",
+  "version": "0.2.0",
+  "private": true,
+  "description": "NeoSolver service: POST a challenge test file, get the working files back as a self-verifying POSIX shell script (default), a tar.gz archive, or JSON.",
+  "type": "module",
+  "bin": {
+    "neosolver": "./bin/neosolver.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "bin",
+    "src",
+    "deploy",
+    "README.md",
+    "neosolver.env.example"
+  ],
+  "scripts": {
+    "test": "node --test test/",
+    "start": "node bin/neosolver.mjs serve",
+    "mock": "node test/e2e/serve-mock-provider.mjs"
+  },
+  "keywords": [
+    "openai-compatible",
+    "challenge",
+    "solver",
+    "zero-dependency",
+    "service"
+  ],
+  "license": "MIT"
+}

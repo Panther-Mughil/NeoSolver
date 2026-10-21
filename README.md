@@ -3,6 +3,22 @@
 Send a coding challenge's test file from a terminal, get the solution files back.
 
 ```bash
+# Recommended: pin the files you expect with -H 'X-Targets'
+curl -s https://solver.example.com/s/myteam7 \
+  -H 'X-Targets: App.jsx,App.css,index.html,script.js' \
+  -T tests.js | sh
+```
+
+`-H 'X-Targets: ...'` is a comma-separated list of the files you want written, and
+it is the most useful part of the whole interface: without it the model guesses the
+filenames and can return an incomplete set. It is also the safest form to type — the
+value contains no `&` or other character the shell treats specially, so a lost quote
+cannot silently turn your upload into a broken request. Use **relative paths**
+(`src/components/Card.jsx`), relative to the directory you run the command from.
+
+Drop the header to let the model choose for itself:
+
+```bash
 curl -s https://solver.example.com/s/myteam7 -T tests.js | sh
 ```
 

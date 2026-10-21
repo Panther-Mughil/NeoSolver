@@ -6,85 +6,205 @@ Send a coding challenge's test file from a terminal, get the solution files back
 curl -s https://solver.example.com/s/myteam7 -T tests.js | sh
 ```
 
-That is the whole client. Nothing is installed, created, or uploaded inside the
-challenge environment — the terminal is only used to *send* the test file and to
+That is the entire client. Nothing is installed, created, or uploaded inside the
+challenge environment — the terminal is used only to *send* the test file and to
 *run* the returned script.
+
+**Contents:** [Quick start](#quick-start) · [Verify](#3-verify-it-works) ·
+[Configure](#configuration-reference) · [Day to day](#using-it-day-to-day) ·
+[Troubleshooting](#troubleshooting) · [Deploy](#deployment) · [Security](#security)
 
 ---
 
-## How it works
+## The problem it solves
 
-1. A terminal sends a challenge's test file (`-T tests.js`) to this service.
-2. The service asks an OpenAI-compatible model for the source files that make
-   that test file pass.
-3. It answers with a POSIX shell script that **writes every file**, **runs the
-   tests**, prints a per-file status block, and then prints the final code of
-   every file it wrote.
+Some challenge environments block copy/paste, so you cannot copy a test file out
+or paste a solution in. But their terminal usually has outbound internet.
 
-The model reply is untrusted input: absolute paths, `..`, leading `-`, duplicate
-paths, oversized file sets and control characters are all rejected, and nothing is
-written unless the whole file set is safe.
+This service sits on a machine you control, receives the test file, asks a model
+for the source files that make it pass, and returns a shell script that writes
+those files, runs the tests, and prints the result — all inside that terminal.
+
+### How it works
+
+```
+challenge terminal                your machine                  model provider
+──────────────────                ────────────                  ──────────────
+curl -T tests.js  ──────────────► NeoSolver  ──chat/completions─►
+                  ◄────────────── shell script ◄─────────────────
+| sh  → writes files, runs tests, prints PASS/FAIL and the code
+```
+
+The model reply is treated as untrusted input: absolute paths, `..`, leading
+`-`, duplicate paths, oversized file sets and control characters are all
+rejected, and **nothing is written unless the whole file set is safe**.
 
 ## Requirements
 
-- **Node.js 20 or newer** (uses the built-in `fetch`, `node --test`, and `AbortSignal`).
-- **No npm dependencies** — nothing to install.
+- **Node.js 20 or newer** — uses the built-in `fetch`, `node --test` and
+  `AbortSignal`. Check with `node -v`.
+- **No npm dependencies.** There is nothing to `npm install`.
 - An **OpenAI-compatible chat-completions endpoint** and an API key for it.
-  Any provider that speaks `POST {base}/v1/chat/completions` will do.
+  Any provider that accepts `POST {base}/v1/chat/completions` works.
+- The machine running the challenge must be able to **reach this host over the
+  network** (it needs outbound internet, and this service needs to be reachable
+  from it — over your LAN or through a public URL).
 
-## Install
+## Quick start
+
+### 1. Collect your provider details
+
+You need three things from your model provider's dashboard/docs:
+
+| What | Where to find it | What it looks like |
+|---|---|---|
+| **Base URL** | "API base", "endpoint", or their curl example | `https://api.example.com/v1` |
+| **Model id** | their model list | an exact id string, e.g. `vendor/model-name` |
+| **API key** | "API keys" page | a long secret string |
+
+The base URL is forgiving — any of these work, and the service appends the rest:
+
+```
+https://api.example.com
+https://api.example.com/v1
+https://api.example.com/v1/chat/completions
+```
+
+### 2. Install
 
 ```bash
 git clone <this repo> neosolver
 cd neosolver
 cp neosolver.env.example neosolver.env
-$EDITOR neosolver.env      # set the 4 required values (see below)
-./start.sh start -d
-./start.sh status
 ```
 
-`start.sh` refuses to start if a required value is missing, naming each one, and
-refuses to double-start.
+### 3. Configure
 
-| Command | Meaning |
-|---|---|
-| `./start.sh` | start in the foreground (Ctrl-C stops it) |
-| `./start.sh start -d` | start in the background |
-| `./start.sh status` | running/stopped, pid, port, `GET /healthz` |
-| `./start.sh restart -d` | stop then start |
-| `./start.sh stop` | stop |
-| `./stop.sh` | same as `./start.sh stop` |
-| `./start.sh --help` | usage |
-
-## Configure
-
-Four values are required; everything else has a sensible default.
-
-| Variable | Required | Meaning |
-|---|---|---|
-| `NEOSOLVER_TOKEN` | ✅ | Short token **you** choose. Typed by hand on every challenge. |
-| `NEOSOLVER_PROVIDER_URL` | ✅ | Your provider's OpenAI-compatible base URL. |
-| `NEOSOLVER_MODEL` | ✅ | The exact model id your provider expects. |
-| `NEOSOLVER_PROVIDER_KEY` | ✅ | Your provider's API key (or use `NEOSOLVER_PROVIDER_KEY_FILE`). |
-
-The key may also live in a file:
+Edit `neosolver.env` and set these four. Everything else has a working default.
 
 ```bash
-NEOSOLVER_PROVIDER_KEY_FILE=/run/secrets/provider-key
+NEOSOLVER_TOKEN=myteam7                            # you invent this
+NEOSOLVER_PROVIDER_URL=https://api.example.com/v1   # from step 1
+NEOSOLVER_MODEL=vendor/model-name                   # from step 1
+NEOSOLVER_PROVIDER_KEY=sk-...                       # from step 1
 ```
 
-It is never logged, never returned in a response, and redacted everywhere.
+Optionally add a second model so a slow or failing primary gets one retry:
 
-Check your configuration without starting:
+```bash
+NEOSOLVER_FALLBACK_MODEL=other-vendor/other-model
+```
+
+### 4. Start
+
+```bash
+./start.sh start -d     # background
+./start.sh status       # should say running, and GET /healthz: {"ok":true}
+```
+
+It refuses to start if a required value is missing — naming each one — and
+refuses to double-start.
+
+### 5. Verify it works
+
+Before involving any proxy, prove the model and the write path work **locally**:
+
+```bash
+mkdir -p /tmp/neosolver-check && cd /tmp/neosolver-check
+
+cat > tests.js <<'EOF'
+import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
+test('hello.txt greets', () => {
+  if (!readFileSync('hello.txt', 'utf8').toLowerCase().includes('hello')) {
+    throw new Error('no greeting');
+  }
+});
+EOF
+
+curl -s 'http://127.0.0.1:8787/s/myteam7?test=none' \
+  -H 'X-Targets: hello.txt' -T tests.js | sh
+
+cat hello.txt          # the model should have written this
+```
+
+You should see a per-file status block with `hello.txt: written`, and the file
+should exist. `?test=none` skips the test runner for this smoke test; in a real
+challenge it runs `npm test` by default.
+
+If that works, the rest is just networking.
+
+### 6. Use it from a challenge
+
+```bash
+curl -s https://solver.example.com/s/myteam7 \
+  -H 'X-Targets: App.jsx,App.css,index.html,script.js' \
+  -T tests.js | sh
+```
+
+## Configuration reference
+
+Four values are required; the rest are optional.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `NEOSOLVER_TOKEN` | **required** | Short token you invent; typed on every challenge |
+| `NEOSOLVER_PROVIDER_URL` | **required** | Your provider's OpenAI-compatible base |
+| `NEOSOLVER_MODEL` | **required** | Exact model id your provider expects |
+| `NEOSOLVER_PROVIDER_KEY` | **required** | Your API key (or use `_KEY_FILE`) |
+| `NEOSOLVER_FALLBACK_MODEL` | *(empty)* | One retry model, see [model fallback](#model-fallback) |
+| `NEOSOLVER_PROVIDER_KEY_FILE` | *(empty)* | Read the key from a file instead (e.g. a secret mount) |
+| `NEOSOLVER_ALLOWED_MODELS` | *(empty)* | Comma list; `?model=` outside it is a `400` |
+| `NEOSOLVER_HOST` | `127.0.0.1` | Use `0.0.0.0` if a proxy on another host must reach it |
+| `NEOSOLVER_PORT` | `8787` | Listening port |
+| `NEOSOLVER_ALLOW_ANON` | `0` | `1` disables client auth — see [Security](#security) |
+| `NEOSOLVER_MAX_BODY` | `1048576` | Max test-file size in bytes |
+| `NEOSOLVER_TIMEOUT_MS` | `120000` | Per provider call |
+| `NEOSOLVER_MAX_FILES` | `64` | Max files the model may return |
+| `NEOSOLVER_MAX_TOTAL_BYTES` | `4194304` | Max total size of those files |
+| `NEOSOLVER_MAX_CONCURRENCY` | `8` | Solves running at once |
+| `NEOSOLVER_QUEUE_LIMIT` | `32` | Requests allowed to wait; beyond → `503` |
+| `NEOSOLVER_HEARTBEAT_MS` | `15000` | Keep-alive comment during a streamed solve |
+| `NEOSOLVER_TEST_COMMAND` | `npm test` | Command the returned script runs |
+| `NEOSOLVER_LOG_LEVEL` | `info` | `error`/`warn`/`info`/`debug` |
+| `NEOSOLVER_LOG_FILE` | *(empty)* | Log file (rotated); empty = stderr only |
+| `NEOSOLVER_LOG_MAX_BYTES` | `5242880` | Rotate to `<file>.1` past this; `0` disables |
+
+Validate without starting:
 
 ```bash
 node bin/neosolver.mjs --check-config
 ```
 
-## Client usage
+### start.sh commands
 
-Pin the files you expect with the **`X-Targets` header** — it contains no
-character the shell treats specially, so a lost quote cannot silently break it:
+| Command | Meaning |
+|---|---|
+| `./start.sh` | foreground (Ctrl-C stops) |
+| `./start.sh start -d` | background |
+| `./start.sh status` | pid, port, `GET /healthz` |
+| `./start.sh restart -d` | stop then start |
+| `./start.sh stop` / `./stop.sh` | stop |
+| `./start.sh --help` | usage |
+
+### HTTP endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST`/`PUT` | `/solve` | test file in the body |
+| `POST`/`PUT` | `/s/<token>` | same, token in the path |
+| `GET` | `/healthz` | liveness, no auth |
+| `GET` | `/` | usage text, no auth |
+
+Per-request options: `?format=sh|tar|json`, `?test=<cmd>`, `?test=none`,
+`?model=<id>`, `?target=<path>` (repeatable), or the `X-Targets` header.
+
+## Using it day to day
+
+### Pinning the files you want
+
+The model decides which files to produce. Tell it with the **`X-Targets`
+header** — it contains no character the shell treats specially:
 
 ```bash
 curl -s https://solver.example.com/s/myteam7 \
@@ -92,153 +212,136 @@ curl -s https://solver.example.com/s/myteam7 \
   -T App.test.js | sh
 ```
 
-The repeatable `?target=` query form works too, and both can be combined
-(query values first, then the header; duplicates dropped; 64 max):
+The repeatable `?target=` query works too and both can be combined (query first,
+then header; duplicates dropped; 64 max):
 
 ```bash
 curl -s 'https://solver.example.com/s/myteam7?target=App.jsx&target=App.css' -T App.test.js | sh
 ```
 
-**Paths are relative to the directory you run the command from.** If your
-components live under `src/`, either run from the project root and use
-`src/components/Card.jsx`, or `cd src` and use `components/Card.jsx`.
+### Paths are relative to your current directory
+
+The returned script writes relative to where you run it. So:
+
+| You are in | Put in `-H` | Lands at |
+|---|---|---|
+| project root | `src/components/Card.jsx` | `<root>/src/components/Card.jsx` |
+| `src/` | `components/Card.jsx` | `<root>/src/components/Card.jsx` |
+| `src/` | `src/components/Card.jsx` | ❌ `<root>/src/src/components/Card.jsx` |
+
+When in doubt, run from the project root.
 
 ### Three ways to get no files
 
 | Mistake | Result |
 |---|---|
 | `curl -d @tests.js` | **`-d` strips newlines** and corrupts the test file. Use `-T` or `--data-binary`. |
-| Trailing slash: `.../s/myteam7/` | `curl -T` then appends the filename → `PUT /s/myteam7/tests.js` → 404. |
-| Unquoted `?target=a&target=b` | The shell splits on `&`; the request quietly becomes a `GET` with no body. Quote the URL. |
+| Trailing slash `.../s/myteam7/` | `curl -T` appends the filename → `PUT /s/myteam7/tests.js` → **404**. |
+| Unquoted `?target=a&target=b` | The shell splits on `&`; you send a `GET` with no file. Quote the URL. |
 
-Files that are read-only are retried once after `chmod u+w`; if they still cannot
-be written the script says which ones failed and why, and exits non-zero.
+### Read-only files
 
-## Endpoints
+If a target file cannot be written, the script retries once after `chmod u+w`,
+reports `FAILED (...)` for that file, **continues with the rest**, runs the tests,
+and exits non-zero. Nothing is silently skipped.
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST`/`PUT` | `/solve` | the test file in the body |
-| `POST`/`PUT` | `/s/<token>` | same, token in the path |
-| `GET` | `/healthz` | liveness, no auth |
-| `GET` | `/` | usage text, no auth |
+### Model fallback
 
-Per request: `?format=sh|tar|json`, `?test=<cmd>`, `?test=none`, `?model=<id>`,
-`?target=<path>` (repeatable), or the `X-Targets` header.
-
-## Models and the fallback
-
-`NEOSOLVER_MODEL` is the primary. `NEOSOLVER_FALLBACK_MODEL` (optional) is tried
-for **exactly one** extra attempt, and only when a different model can plausibly
-help:
+`NEOSOLVER_FALLBACK_MODEL` is tried for **exactly one** extra attempt:
 
 | Falls back | Does **not** fall back |
 |---|---|
-| timeout, HTTP 429, 5xx, network error | credential/permission failure (401/403) |
-| an answer that cannot be parsed | an unsafe or ambiguous file path |
+| timeout, `429`, `5xx`, network error | credential/permission failure (`401`/`403`) |
+| an answer that cannot be parsed | an unsafe or ambiguous path |
 
-That split is deliberate: an operator problem must not be hidden by quietly
-spending a second model. Every solve logs `fellBack=yes|no`.
+An operator problem must never be hidden by quietly spending a second model.
+Every solve logs `fellBack=yes|no`.
 
-## Concurrency
+### Streaming
 
-| Variable | Default | Meaning |
+The default `sh` response streams: the shebang and `# NeoSolver: solving` go out
+immediately, then the script when the model answers. This keeps proxies from
+timing out a slow solve, and shows progress instead of a blank cursor. A
+keep-alive comment is written every `NEOSOLVER_HEARTBEAT_MS`.
+
+Because the status is committed before the answer is known, a failure *after*
+streaming starts arrives as a script that prints the error and exits non-zero.
+Use `?format=json` when you need exact HTTP statuses.
+
+## Troubleshooting
+
+Start with the server log (or `./start.sh status`), then match the symptom.
+
+| Symptom | Cause | Fix |
 |---|---|---|
-| `NEOSOLVER_MAX_CONCURRENCY` | `8` | solves running at once |
-| `NEOSOLVER_QUEUE_LIMIT` | `32` | requests allowed to wait; beyond this → `503` + `Retry-After: 5` |
-
-A solve holds an upstream socket for the whole model call, so the burst is
-bounded rather than unbounded. `0` refuses as soon as the slots are taken.
-
-## Streaming
-
-The default `sh` response is **streamed**: the shebang and a status comment go
-out immediately, and the script follows when the model answers.
-
-- a reverse proxy that times out an origin producing nothing (for example
-  Cloudflare's ~100 s, error `524`) cannot kill a slow solve;
-- the terminal shows `# NeoSolver: solving` instead of a blank cursor.
-
-While the model works, a keep-alive comment is written every
-`NEOSOLVER_HEARTBEAT_MS` (default `15000`; `0` disables) so a proxy cannot drop a
-silent body either. Because the status is committed before the answer is known, a
-failure after streaming starts arrives as a script that prints the error and
-exits non-zero — ask for `?format=json` when you need the exact HTTP status.
-
-`?format=json` and `?format=tar` are never streamed and keep their exact status
-codes and `Content-Length`.
-
-## Errors
-
-The default client is `curl ... | sh`, so an error is rendered as a script that
-prints a readable message and exits non-zero:
-
-```
-NeoSolver: HTTP 502 unprocessable_reply: the model reply could not be parsed
-Hint: try again, or split the request into fewer ?target= files
-```
-
-`?format=json` and `?format=tar` return the JSON error object with the real
-status (`400`, `401`, `413`, `429`, `502`, `503`, `504`). `/healthz`, `GET /` and
-unknown routes always answer in JSON/plain text.
-
-## Logging
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `NEOSOLVER_LOG_LEVEL` | `info` | `error` / `warn` / `info` / `debug` |
-| `NEOSOLVER_LOG_FILE` | empty (stderr only) | the service appends here |
-| `NEOSOLVER_LOG_MAX_BYTES` | `5242880` | rotate to `<file>.1` past this; `0` disables |
-
-One previous generation is kept, so an unattended service cannot fill the disk.
-stderr is still echoed live when attached to a terminal, and it is what a
-container platform captures when no log file is configured.
+| `sh: line 1: error: command not found` | The body was **not** a shell script — a proxy error page or a JSON error got piped into `sh`. | Re-run with `?format=json` and look at the real message |
+| `NeoSolver: HTTP 401 unauthorized` | Wrong or missing token | Check `NEOSOLVER_TOKEN` and the `/s/<token>` path |
+| `NeoSolver: HTTP 404` | Trailing slash after the token | Use `/s/myteam7`, not `/s/myteam7/` |
+| `NeoSolver: HTTP 413` | Test file larger than `NEOSOLVER_MAX_BODY` | Raise it, or send less |
+| `NeoSolver: HTTP 429 rate_limited` | Provider throttling | Wait, retry, or lower `NEOSOLVER_MAX_CONCURRENCY` |
+| `NeoSolver: HTTP 502 unprocessable_reply` | The model's answer could not be parsed | Retry; send fewer `?target=` files per call |
+| `NeoSolver: HTTP 503 service_unavailable` | Concurrency slots + queue full | Retry; raise `NEOSOLVER_MAX_CONCURRENCY` |
+| `NeoSolver: HTTP 504 provider_timeout` | Provider did not answer in `NEOSOLVER_TIMEOUT_MS` | Retry; a fallback model helps |
+| Request arrived as `GET` / `405` | Unquoted `&` split your command | Quote the URL |
+| File written but content corrupted | `curl -d` used instead of `-T` | `-T` or `--data-binary` |
+| `FAILED (could not write it, even after chmod u+w)` | File is read-only or owned by another user | `chmod -R u+w .`, or run where you can write |
+| Blank terminal for minutes | A slow model call (streaming line should show) | Wait; check the log for `solved ... ms=` |
+| `EADDRINUSE` | Another instance already on that port | `./start.sh status`, or change `NEOSOLVER_PORT` |
+| Service dies right after starting | Launched from a shell that was then closed | Run `./start.sh start -d`; consider adding `setsid` to the detach line |
 
 ## Deployment
 
-Put it behind any reverse proxy you already run and terminate TLS there. Two
-things matter:
+Put it behind any reverse proxy you already run and terminate TLS there.
 
-1. **Bind a reachable interface** — `NEOSOLVER_HOST=0.0.0.0`, not `127.0.0.1`, or
-   a proxy on another host cannot reach it.
-2. **Give the proxy a long enough response timeout.** Requests stream, so a
-   proxy that requires a *complete* response within N seconds will still cut a
-   very slow solve. Raise it, or leave the origin unproxied.
+Two things matter:
+
+1. **Bind a reachable interface** — `NEOSOLVER_HOST=0.0.0.0`. With `127.0.0.1` a
+   proxy on another host cannot reach it.
+2. **Give the proxy a long response timeout.** Responses stream, so most proxies
+   are fine — but one that insists on a *complete* response within N seconds
+   still cuts a very slow solve. Raise it, or leave the origin unproxied.
 
 Example (Nginx Proxy Manager fields in parentheses):
 
 ```
 domain            solver.example.com
 scheme            http
-forward host/ip   192.0.2.10          (Forward Hostname / IP)
-forward port      8787               (Forward Port)
+forward host/ip   192.0.2.10        (Forward Hostname / IP)
+forward port      8787              (Forward Port)
 ```
 
-On a container platform, set the four required variables as secrets, leave
-`NEOSOLVER_LOG_FILE` empty (the platform captures stderr), and point the process
-at `node bin/neosolver.mjs serve`.
+On a container platform: set the four required values as **secrets**, leave
+`NEOSOLVER_LOG_FILE` empty (the platform captures stderr), use
+`NEOSOLVER_HOST=0.0.0.0`, and start the process with
+`node bin/neosolver.mjs serve`.
 
 ## Security
 
-- The provider key is never logged, never returned, and redacted everywhere.
+- The provider key is never logged, never returned in a response, and redacted
+  from every log line and error message.
+- **Use a long random token if the service is reachable from the internet.** A
+  short token is guessable, and every guess that lands spends your credits.
 - `NEOSOLVER_ALLOW_ANON=1` disables client auth entirely. Anyone who can reach
-  the port can then spend your provider credits; only use it behind a proxy that
+  the port can then spend your credits — only use it behind a proxy that
   enforces its own access control.
-- If the service is reachable from the internet, use a **long random token** —
-  a short one is guessable and every guess that lands spends your credits.
-- Generated scripts single-quote and escape every path and message, so a hostile
-  model reply can never become executable code.
+- Model output is never trusted: paths are sanitised, sets are size-capped, and
+  generated scripts single-quote and escape every path and message so a hostile
+  reply cannot become executable code.
 
-## Tests
+## Development
 
 ```bash
-node --test test/
+node --test test/          # 223 tests, zero dependencies
+node bin/neosolver.mjs --help
 ```
+
+Layout: `bin/` entry point · `src/` service (config, provider, prompt, parse,
+paths, render, server, log) · `test/` suite with a mock provider and fixtures.
 
 ## Limitations
 
-- One request is one model call. A large challenge (many files) can take a while;
-  the streamed response is what keeps a slow call alive.
-- The service holds no state, so nothing is remembered between requests.
-- `tar` output is produced by a small built-in ustar writer; `sh` (the default)
-  needs only `mkdir`, `base64`, `chmod` and `cat` on the client.
+- One request is one model call; a challenge with many files takes longer. The
+  streamed response is what keeps a slow call alive.
+- The service is stateless — nothing is remembered between requests.
+- The `sh` format needs only `mkdir`, `base64`, `chmod` and `cat` on the client.
+  `?format=tar` is produced by a small built-in ustar writer.
